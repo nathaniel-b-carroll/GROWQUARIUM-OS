@@ -1,0 +1,36 @@
+name: Build GROWQUARIUM-OS Image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        uses: usimd/pi-gen-action@v1
+        id: build
+        with:
+          image-name: growquarium-os
+          stage-list: stage0 stage1 stage2 ./OS/pi-gen-stage
+          compression: zip
+          compression-level: 6
+          hostname: growquarium
+          username: pi
+          enable-ssh: 1
+          locale: en_US.UTF-8
+          timezone: America/New_York
+          keyboard-keymap: us
+          keyboard-layout: English (US)
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: growquarium-os
+          path: ${{ steps.build.outputs.image-path }}
+          retention-days: 14

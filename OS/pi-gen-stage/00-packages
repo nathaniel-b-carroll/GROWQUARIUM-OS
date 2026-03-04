@@ -1,0 +1,5 @@
+python3-flask
+hostapd
+dnsmasq
+avahi-daemon
+wireless-tools

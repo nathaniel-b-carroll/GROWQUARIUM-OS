@@ -1,0 +1,17 @@
+[Unit]
+Description=GrowQuarium Controller Boot Manager
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/growquarium
+ExecStart=/usr/bin/python3 /opt/growquarium/boot_manager.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

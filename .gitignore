@@ -1,0 +1,13 @@
+# pi-gen build artifacts
+.pi-gen/
+deploy/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+
+# Claude Code local settings
+.claude/

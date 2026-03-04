@@ -1,0 +1,22 @@
+{
+  "pump_schedules": [
+    {
+      "start": "06:00",
+      "duration_min": 5,
+      "enabled": true
+    },
+    {
+      "start": "12:00",
+      "duration_min": 5,
+      "enabled": true
+    },
+    {
+      "start": "18:00",
+      "duration_min": 5,
+      "enabled": true
+    }
+  ],
+  "pump_burst_seconds": 300,
+  "pump_interval_minutes": 360,
+  "theme": "amber"
+}
