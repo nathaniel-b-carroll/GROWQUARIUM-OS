@@ -6,9 +6,13 @@ Runs on port 5000 after WiFi connection is established.
 
 from flask import Flask, render_template_string, request, jsonify
 import json
+import logging
 import os
+import sqlite3
+import subprocess
 import time
 import threading
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 app = Flask(__name__)
@@ -406,6 +410,51 @@ DASHBOARD_HTML = """
         }
         .toast.success { background: var(--toast-bg); color: var(--toast-text); display: block; }
         .updated { color: var(--text-muted); font-size: 0.65rem; text-align: right; margin-top: 8px; }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            height: 180px;
+            margin-top: 8px;
+        }
+        .chart-container svg { width: 100%; height: 100%; }
+        .chart-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.6rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+        .chart-y-labels {
+            position: absolute;
+            top: 0;
+            right: 4px;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            font-size: 0.55rem;
+            color: var(--text-muted-2);
+            pointer-events: none;
+        }
+        .chart-empty {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 180px;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+        .wifi-reset-btn {
+            padding: 10px 24px;
+            background: none;
+            border: 1px solid var(--delete-btn);
+            color: var(--pump-off-text);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.2s;
+        }
+        .wifi-reset-btn:hover { background: var(--pump-off-bg); }
     </style>
 </head>
 <body data-theme="{{ theme }}">
@@ -457,6 +506,14 @@ DASHBOARD_HTML = """
     </div>
     <div class="updated" id="last-updated"></div>
 
+    <!-- Temperature History -->
+    <div class="section">
+        <h2>Water Temperature (24h)</h2>
+        <div id="chart-area">
+            <div class="chart-empty">Collecting data...</div>
+        </div>
+    </div>
+
     <!-- Pump Control -->
     <div class="section">
         <h2>Pump Control</h2>
@@ -474,6 +531,15 @@ DASHBOARD_HTML = """
         <button class="add-btn" onclick="addSchedule()">+ Add Schedule</button>
         <br>
         <button class="save-btn" onclick="saveSchedules()">Save Schedules</button>
+    </div>
+
+    <!-- Settings -->
+    <div class="section">
+        <h2>Settings</h2>
+        <button class="wifi-reset-btn" onclick="resetWiFi()">Reset WiFi</button>
+        <span style="font-size:0.7rem; color:var(--text-muted); margin-left:12px">
+            Clears saved network and returns to setup mode
+        </span>
     </div>
 
     <div class="toast" id="toast"></div>
@@ -581,9 +647,84 @@ DASHBOARD_HTML = """
             });
         });
 
+        // ── SVG Chart ──────────────────────────────────────────
+        function updateChart() {
+            fetch('/api/sensors/history?hours=24')
+                .then(r => r.json())
+                .then(data => {
+                    const readings = (data.readings || []).filter(r => r.water_temp_f != null);
+                    const area = document.getElementById('chart-area');
+                    if (readings.length < 2) {
+                        area.innerHTML = '<div class="chart-empty">Collecting data...</div>';
+                        return;
+                    }
+                    const temps = readings.map(r => r.water_temp_f);
+                    const times = readings.map(r => r.timestamp);
+                    const minT = Math.floor(Math.min(...temps) - 1);
+                    const maxT = Math.ceil(Math.max(...temps) + 1);
+                    const range = maxT - minT || 1;
+                    const pad = { top: 10, right: 40, bottom: 4, left: 4 };
+                    const w = 600, h = 180;
+                    const cw = w - pad.left - pad.right;
+                    const ch = h - pad.top - pad.bottom;
+
+                    let points = temps.map((t, i) => {
+                        const x = pad.left + (i / (temps.length - 1)) * cw;
+                        const y = pad.top + ch - ((t - minT) / range) * ch;
+                        return `${x},${y}`;
+                    });
+
+                    // Build fill polygon (area under line)
+                    const firstX = pad.left;
+                    const lastX = pad.left + cw;
+                    const bottomY = pad.top + ch;
+                    const fillPoints = `${firstX},${bottomY} ${points.join(' ')} ${lastX},${bottomY}`;
+
+                    const startTime = times[0].split(' ')[1] || times[0];
+                    const endTime = times[times.length-1].split(' ')[1] || times[times.length-1];
+
+                    area.innerHTML = `
+                        <div class="chart-container">
+                            <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+                                <polygon points="${fillPoints}"
+                                    fill="var(--accent)" fill-opacity="0.1" />
+                                <polyline points="${points.join(' ')}"
+                                    fill="none" stroke="var(--accent)"
+                                    stroke-width="2" stroke-linejoin="round" />
+                            </svg>
+                            <div class="chart-y-labels">
+                                <span>${maxT}&deg;</span>
+                                <span>${minT}&deg;</span>
+                            </div>
+                        </div>
+                        <div class="chart-labels">
+                            <span>${startTime}</span>
+                            <span>${endTime}</span>
+                        </div>`;
+                })
+                .catch(() => {});
+        }
+
+        // ── WiFi Reset ────────────────────────────────────────
+        function resetWiFi() {
+            if (!confirm('Reset WiFi credentials?\\n\\nThe device will restart in setup mode. You will need to reconnect to the GrowQuarium-Setup network.')) return;
+            fetch('/api/wifi-reset', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        showToast('WiFi reset. Entering setup mode...');
+                    } else {
+                        showToast(data.error || 'Reset failed.');
+                    }
+                })
+                .catch(() => showToast('Request failed.'));
+        }
+
         renderSchedules();
         updateSensors();
+        updateChart();
         setInterval(updateSensors, 5000);
+        setInterval(updateChart, 30000);
     </script>
 </body>
 </html>
@@ -664,27 +805,211 @@ def api_save_schedules():
     return jsonify({"success": True})
 
 
-# ── Pump Scheduler Thread ──────────────────────────────────────
+@app.route("/api/sensors/history")
+def api_sensor_history():
+    """Return sensor history for charting. Query param: hours (default 24)."""
+    hours = request.args.get("hours", 24, type=int)
+    hours = max(1, min(hours, 720))  # Clamp to 1h–30d
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            """SELECT timestamp, water_temp_f, ph, humidity,
+                      air_temp_c, flow_lpm, pump_state
+               FROM sensor_readings
+               WHERE timestamp > datetime('now', 'localtime', ? || ' hours')
+               ORDER BY timestamp ASC""",
+            (f"-{hours}",),
+        )
+        readings = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        # Downsample to ~200 points max for chart performance
+        if len(readings) > 200:
+            step = len(readings) // 200
+            readings = readings[::step]
+
+        return jsonify({"readings": readings})
+    except Exception as e:
+        return jsonify({"readings": [], "error": str(e)})
+
+
+WPA_CONF = "/etc/wpa_supplicant/wpa_supplicant.conf"
+
+
+@app.route("/api/wifi-reset", methods=["POST"])
+def api_wifi_reset():
+    """Clear saved WiFi credentials and restart into AP mode."""
+    try:
+        # Keep only the wpa_supplicant header (first 3 lines)
+        header_lines = [
+            "ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\n",
+            "update_config=1\n",
+            "country=US\n",
+        ]
+        try:
+            with open(WPA_CONF, "r") as f:
+                lines = f.readlines()
+            # Preserve actual header if it exists
+            header_lines = []
+            for line in lines:
+                if line.strip().startswith("network="):
+                    break
+                header_lines.append(line)
+        except (FileNotFoundError, PermissionError):
+            pass
+
+        Path(WPA_CONF).write_text("".join(header_lines))
+        app.logger.info("WiFi credentials cleared")
+
+        # Restart the service so boot_manager re-enters AP mode
+        subprocess.Popen(
+            ["sudo", "systemctl", "restart", "growquarium.service"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return jsonify({"success": True, "message": "WiFi reset. Entering setup mode..."})
+    except PermissionError:
+        return jsonify({"success": False, "error": "Permission denied (not running as root)"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ── Sensor History (SQLite) ────────────────────────────────────
+
+DB_PATH = str(Path(CONFIG_PATH).parent / "sensors.db")
+
+
+def init_db():
+    """Create sensor history database if it doesn't exist."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sensor_readings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT DEFAULT (datetime('now', 'localtime')),
+                water_temp_f REAL,
+                ph REAL,
+                humidity REAL,
+                air_temp_c REAL,
+                flow_lpm REAL,
+                pump_state INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_timestamp
+            ON sensor_readings(timestamp DESC)
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.warning(f"Could not initialize sensor DB: {e}")
+
+
+def log_sensor_reading():
+    """Record current sensor readings to SQLite."""
+    try:
+        sensors = read_sensors()
+        pump_on = get_pump_state()
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            """INSERT INTO sensor_readings
+               (water_temp_f, ph, humidity, air_temp_c, flow_lpm, pump_state)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                sensors.get("water_temp_f"),
+                sensors.get("ph"),
+                sensors.get("humidity"),
+                sensors.get("air_temp_c"),
+                sensors.get("flow_lpm"),
+                1 if pump_on else 0,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.warning(f"Failed to log sensor reading: {e}")
+
+
+def cleanup_old_readings():
+    """Delete sensor readings older than 30 days."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "DELETE FROM sensor_readings WHERE timestamp < datetime('now', '-30 days')"
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.warning(f"Failed to clean old readings: {e}")
+
+
+# ── Pump Scheduler Thread (non-blocking) ─────────────────────
+
+_pump_run_until: datetime | None = None
+_last_triggered: dict[str, date] = {}
+_scheduler_lock = threading.Lock()
+
 
 def pump_scheduler():
-    """Background thread that runs pump according to saved schedules."""
+    """Non-blocking scheduler. Polls every 10s, tracks pump state via timestamps."""
+    global _pump_run_until
+    last_log_minute = -1
+    last_cleanup_hour = -1
+
     while True:
         try:
-            config = load_config()
-            now = time.strftime("%H:%M")
-            for sched in config["pump_schedules"]:
-                if sched["enabled"] and sched["start"] == now:
-                    app.logger.info(f"Scheduled pump run: {sched['duration_min']}min")
-                    set_pump(True)
-                    time.sleep(sched["duration_min"] * 60)
+            now = datetime.now()
+
+            with _scheduler_lock:
+                # Check if current scheduled run should stop
+                if _pump_run_until is not None and now >= _pump_run_until:
+                    app.logger.info("Scheduled pump run complete")
                     set_pump(False)
+                    _pump_run_until = None
+
+                # Check if a new run should start
+                if _pump_run_until is None:
+                    config = load_config()
+                    current_hm = now.strftime("%H:%M")
+                    for sched in config["pump_schedules"]:
+                        if not sched["enabled"]:
+                            continue
+                        if sched["start"] != current_hm:
+                            continue
+                        sched_key = sched["start"]
+                        if _last_triggered.get(sched_key) == now.date():
+                            continue
+                        # Start pump run
+                        duration = sched["duration_min"] * 60
+                        _pump_run_until = now + timedelta(seconds=duration)
+                        _last_triggered[sched_key] = now.date()
+                        set_pump(True)
+                        app.logger.info(
+                            f"Scheduled pump run: {sched['duration_min']}min "
+                            f"(until {_pump_run_until.strftime('%H:%M:%S')})"
+                        )
+                        break
+
+            # Log sensor readings once per minute
+            if now.minute != last_log_minute:
+                last_log_minute = now.minute
+                log_sensor_reading()
+
+            # Cleanup old readings once per hour
+            if now.hour != last_cleanup_hour:
+                last_cleanup_hour = now.hour
+                cleanup_old_readings()
+
         except Exception as e:
             app.logger.error(f"Scheduler error: {e}")
-        time.sleep(60)  # Check every minute
+
+        time.sleep(10)
 
 
 def start_scheduler():
     """Start the pump scheduler thread. Call explicitly — not at import time."""
+    init_db()
     thread = threading.Thread(target=pump_scheduler, daemon=True)
     thread.start()
     app.logger.info("Pump scheduler started.")

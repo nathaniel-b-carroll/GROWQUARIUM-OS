@@ -18,5 +18,5 @@
   ],
   "pump_burst_seconds": 300,
   "pump_interval_minutes": 360,
-  "theme": "amber"
+  "theme": "slate"
 }
